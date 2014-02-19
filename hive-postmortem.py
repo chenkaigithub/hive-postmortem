@@ -203,7 +203,53 @@ def main():
 	printStats(stats, verbose)
 
 	# Dump out global statistics.
-	print("\nKey,Vertex,TotalContainers,TotalBytes,TotalRows,ReadHistCounts,ReadHistCenters,RunTimeS")
+	dumpGlobalStats(queryKey, globalStats, counterStats)
+
+	# Dump out the counter stats.
+	dumpCounterStats(queryKey, counterStats)
+
+	# Dump out exception info.
+	dumpExceptionInfo(queryKey, exceptions)
+
+	# Some key job statistics. Right now just intermediate data.
+	print("\nOther Stats:")
+	print("TotalIntermediateData")
+	intermediateData = 0
+	for vertex in globalStats.keys():
+		if vertex[0:7] == "Reducer":
+			intermediateData += globalStats[vertex]["totalBytes"]
+	print(readable(intermediateData))
+	
+def dumpExceptionInfo(queryKey, exceptions):
+	print("\nPossible Errors:")
+	print("QueryKey,Vertex,ListOfExceptions")
+	for v in exceptions:
+		vName = v
+		if vName == None:
+			vName = "AppMaster"
+		print(queryKey, ",", vName, ",", end='', sep='')
+		print(','.join(exceptions[v].keys()))
+
+def dumpCounterStats(queryKey, counterStats):
+	print("\nNotable Counter Stats:")
+	importantCounterStats = ["DATA_LOCAL_TASKS", "RACK_LOCAL_TASKS", "SPILLED_RECORDS", \
+	    "WRONG_MAP", "WRONG_REDUCE", "WRONG_LENGTH", "FAILED_SHUFFLE", \
+	    "BAD_ID", "IO_ERROR"]
+	print("QueryKey,Vertex", end='')
+	for key in importantCounterStats:
+		print(",", key, sep='', end='')
+	print("")
+	for vertex in counterStats.keys():
+		print(queryKey, ",", vertex, sep='', end='')
+		for key in importantCounterStats:
+			if counterStats[vertex].has_key(key):
+				print(",", counterStats[vertex][key], sep='', end='')
+			else:
+				print(",0", sep='', end='')
+		print("")
+
+def dumpGlobalStats(queryKey, globalStats, counterStats):
+	print("\nQueryKey,Vertex,TotalContainers,TotalBytes,TotalRows,ReadHistCounts,ReadHistCenters,RunTimeSec")
 	for vertex in globalStats.keys():
 		# Compute histograms if data is available.
 		logging.info("Compute histograms for " + vertex)
@@ -229,32 +275,6 @@ def main():
 		    runTime / 1000.0, \
 		    sep='')
 
-	# Dump out the counter stats.
-	print("\nNotable Counter Stats:")
-	importantCounterStats = ["DATA_LOCAL_TASKS", "RACK_LOCAL_TASKS", "SPILLED_RECORDS", \
-	    "WRONG_MAP", "WRONG_REDUCE", "WRONG_LENGTH", "FAILED_SHUFFLE", \
-	    "BAD_ID", "IO_ERROR"]
-
-	# Preamble.
-	print("Vertex,", end='')
-	for key in importantCounterStats:
-		print(key, ",", sep='', end='')
-	print("")
-	for vertex in counterStats.keys():
-		print(vertex, sep='', end='')
-		for key in importantCounterStats:
-			if counterStats[vertex].has_key(key):
-				print(",", counterStats[vertex][key], sep='', end='')
-			else:
-				print(",0", sep='', end='')
-		print("")
-
-	# Dump out exception info.
-	print("\nQueryKey,Vertex,ListOfExceptions")
-	for v in exceptions:
-		print(queryKey, ",", v, ",", end='', sep='')
-		print(','.join(exceptions[v].keys()))
-
 def readable(num):
 	for x in ['bytes','KB','MB','GB','TB']:
 		if num < 1024.0:
@@ -264,8 +284,6 @@ def readable(num):
 def resetStats(stats):
 	stats["containerName"] = None
 	stats["vertexName"] = None
-	stats["startTime"] = None
-	stats["endTime"] = None
 	stats["nBytes"] = 0
 	stats["nRows"] = 0
 	stats["nException"] = 0
@@ -274,17 +292,12 @@ def resetStats(stats):
 def printStats(stats, verbose, queryKey="NONE"):
 	if not verbose:
 		return
-	durationString = "N/A"
-	if stats["endTime"] and stats["startTime"]:
-		delta = stats["endTime"] - stats["startTime"]
-		durationString = str(delta.seconds) + "." + str(delta.microseconds/1000)
 
 	print(queryKey, ",", \
 		stats["containerName"], ",", \
 		stats["vertexName"], ",", \
 		stats["nBytes"], ",", \
 		stats["nRows"], ",", \
-		durationString, ",", \
 		stats["nException"], ",", \
 		stats["nExit"], sep='')
 
