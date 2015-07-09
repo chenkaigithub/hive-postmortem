@@ -62,8 +62,9 @@ def main():
 	# Regular expressions we use.
 	containerIdRe = re.compile("^Container: (container_\d+_\d+_\d+_\d+)")
 	vertexNameRe = re.compile("VertexName: ([^,]+)")
-	bytesRe = re.compile("Read (\d+) byte")
-	rowsRe = re.compile("processed (\d+) row")
+	bytesRe = re.compile("BYTES_READ=(\d+)")
+	bytesWriteRe = re.compile("BYTES_WRITTEN=(\d+)")
+	recordsRe = re.compile("INPUT_RECORDS_PROCESSED=(\d+)")
 	exceptionRe = re.compile("([A-Za-z]+Exception)")
 	timeRe = re.compile("(\d{4}-\d{2}-\d{2} \S+)")
 	taskFinishedRe = re.compile("\[Event:TASK_FINISHED\]: vertexName=([^,]+)")
@@ -73,10 +74,12 @@ def main():
 	nonzeroString = "non-zero"
 	syslogAttemptString = "syslog_attempt"
 	taskCompleteString = "Task completed"
+	dagFinishedString = "Event:DAG_FINISHED"
 
 	# Tracked statistics.
 	stats = {}
 	globalStats = {}
+	dagStats = {}
 	counterStats = {}
 	exceptions = {}
 	resetStats(stats)
@@ -84,7 +87,7 @@ def main():
 
 	# Preamble
 	if verbose:
-		print("QueryKey,ContainerName,nBytes,nRows,Duration,nException,nExit");
+		print("QueryKey,ContainerName,nBytes,nRecs,Duration,nException,nExit");
 
 	# Parse the log file.
 	fd = open(file)
@@ -119,13 +122,14 @@ def main():
 				globalStats[vName] = {}
 				globalStats[vName]["totalContainers"] = 1
 				globalStats[vName]["totalBytes"] = 0
-				globalStats[vName]["totalRows"] = 0
+				globalStats[vName]["totalBytesWrite"] = 0
+				globalStats[vName]["totalRecs"] = 0
 				globalStats[vName]["byteObservations"] = []
 
 		# Look for data read.
-		result = re.search(bytesRe, line)
-		if result != None:
-			found = int(result.group(1))
+		reads = re.findall(bytesRe, line)
+		if len(reads) > 0:
+			found = sum([ int(x) for x in reads ])
 			logging.info("Bytes " + str(found))
 			stats["nBytes"] += found
 			if stats.has_key("vertexName"):
@@ -137,20 +141,35 @@ def main():
 			else:
 				print("Error: Data read outside of named vertex")
 
-		# Look for rows read.
-		result = re.search(rowsRe, line)
-		if result != None:
-			found = int(result.group(1))
-			logging.info("Rows " + str(found))
-			stats["nRows"] += found
+		# Data Written.
+		writes = re.findall(bytesWriteRe, line)
+		if len(writes) > 0:
+			found = sum([ int(x) for x in writes ])
+			logging.info("Bytes Written " + str(found))
+			stats["nBytesWrite"] += found
 			if stats.has_key("vertexName"):
 				vName = stats["vertexName"]
 				if globalStats.has_key(vName):
-					logging.info("Add rows to " + vName)
-					globalStats[vName]["totalRows"] += found
+					logging.info("Add bytes to " + vName)
+					globalStats[vName]["totalBytesWrite"] += found
+					#globalStats[vName]["byteObservations"].extend([found])
 			else:
-				print("Error: Rows read outside of named vertex")
-				
+				print("Error: Data read outside of named vertex")
+
+		# Look for records read.
+		records = re.findall(recordsRe, line)
+		if len(records) > 0:
+			found = sum([ int(x) for x in reads ])
+			logging.info("Records " + str(found))
+			stats["nRecs"] += found
+			if stats.has_key("vertexName"):
+				vName = stats["vertexName"]
+				if globalStats.has_key(vName):
+					logging.info("Add records to " + vName)
+					globalStats[vName]["totalRecs"] += found
+			else:
+				print("Error: Records read outside of named vertex")
+
 		# Look for finished tasks.
 		result = re.search(taskFinishedRe, line)
 		if result != None:
@@ -199,6 +218,16 @@ def main():
 		if line.find(nonzeroString) != -1:
 			stats["nExit"] += 1
 
+		# Look for DAG finished
+		if line.find(dagFinishedString) != -1:
+			# Capture the DAG start and end time.
+			result = re.search("startTime=(\d+)", line)
+			if result != None:
+				dagStats["startTime"] = int(result.group(1))
+			result = re.search("finishTime=(\d+)", line)
+			if result != None:
+				dagStats["finishTime"] = int(result.group(1))
+
 	# Dump out the last container.
 	printStats(stats, verbose)
 
@@ -207,6 +236,9 @@ def main():
 
 	# Dump out the counter stats.
 	dumpCounterStats(queryKey, counterStats)
+
+	# Compare times.
+	dumpRuntimes(queryKey, globalStats, counterStats, dagStats)
 
 	# Dump out exception info.
 	dumpExceptionInfo(queryKey, exceptions)
@@ -219,7 +251,30 @@ def main():
 		if vertex[0:7] == "Reducer":
 			intermediateData += globalStats[vertex]["totalBytes"]
 	print(readable(intermediateData))
-	
+
+def dumpRuntimes(queryKey, globalStats, counterStats, dagStats):
+	runTimes = []
+
+	print("")
+	for vertex in globalStats.keys():
+		# Get runtime from the counter stats area.
+		if counterStats.has_key(vertex):
+			startTime = counterStats[vertex]["startTime"]
+			finishTime = counterStats[vertex]["finishTime"]
+			totalTime = finishTime - startTime
+			runTimes.append(totalTime)
+			print("%s Start %s Finish %s Total %f" % (vertex, toDateTime(startTime), toDateTime(finishTime), totalTime / 1000.0))
+
+	totalVertexRuntime = sum(runTimes) / 1000.0
+	dagStart = dagStats["startTime"]
+	dagFinish = dagStats["finishTime"]
+	dagRuntime = (dagStats["finishTime"] - dagStats["startTime"]) / 1000.0
+	print("DAG Start %s Finish %s Total %f" % (toDateTime(dagStart), toDateTime(dagFinish), dagRuntime))
+	print("Total Vertex Runtime = %fs" % totalVertexRuntime)
+
+def toDateTime(timestamp):
+	return datetime.fromtimestamp(float(timestamp)/1000).strftime("%Y-%m-%d %H:%M:%S")
+
 def dumpExceptionInfo(queryKey, exceptions):
 	print("\nPossible Errors:")
 	print("QueryKey,Vertex,ListOfExceptions")
@@ -249,7 +304,7 @@ def dumpCounterStats(queryKey, counterStats):
 		print("")
 
 def dumpGlobalStats(queryKey, globalStats, counterStats):
-	print("\nQueryKey,Vertex,TotalContainers,TotalBytes,TotalRows,ReadHistCounts,ReadHistCenters,RunTimeSec")
+	print("\nQueryKey,Vertex,TotalContainers,TotalBytesRead,TotalRecsRead,TotalBytesWrite,ReadHistCounts,ReadHistCenters,RunTimeSec")
 	for vertex in globalStats.keys():
 		# Compute histograms if data is available.
 		logging.info("Compute histograms for " + vertex)
@@ -269,7 +324,8 @@ def dumpGlobalStats(queryKey, globalStats, counterStats):
 		    vertex, ",", \
 		    globalStats[vertex]["totalContainers"], ",", \
 		    readable(globalStats[vertex]["totalBytes"]), ",", \
-		    globalStats[vertex]["totalRows"], ",", \
+		    globalStats[vertex]["totalRecs"], ",", \
+		    readable(globalStats[vertex]["totalBytesWrite"]), ",", \
 		    str(counts), ",", \
 		    str(centers), ",", \
 		    runTime / 1000.0, \
@@ -285,7 +341,8 @@ def resetStats(stats):
 	stats["containerName"] = None
 	stats["vertexName"] = None
 	stats["nBytes"] = 0
-	stats["nRows"] = 0
+	stats["nBytesWrite"] = 0
+	stats["nRecs"] = 0
 	stats["nException"] = 0
 	stats["nExit"] = 0
 
@@ -297,7 +354,7 @@ def printStats(stats, verbose, queryKey="NONE"):
 		stats["containerName"], ",", \
 		stats["vertexName"], ",", \
 		stats["nBytes"], ",", \
-		stats["nRows"], ",", \
+		stats["nRecs"], ",", \
 		stats["nException"], ",", \
 		stats["nExit"], sep='')
 
